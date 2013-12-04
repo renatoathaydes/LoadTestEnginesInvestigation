@@ -1,0 +1,8 @@
+selenium-2.37.0/
+lib/
+.idea/
+out/
+build/
+target/
+
+*.class
