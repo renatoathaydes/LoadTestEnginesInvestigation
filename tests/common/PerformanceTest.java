@@ -11,7 +11,7 @@ import org.apache.http.impl.client.HttpClientBuilder;
 import org.junit.AfterClass;
 import org.junit.Rule;
 import org.openqa.selenium.WebDriver;
-import org.openqa.selenium.htmlunit.HtmlUnitDriver;
+import org.openqa.selenium.phantomjs.PhantomJSDriver;
 
 import java.util.Collection;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -24,8 +24,8 @@ import static org.junit.Assert.assertThat;
  */
 public abstract class PerformanceTest
 {
-	public static final int RUNS_PER_THREAD = 10;
-	public static final int THREADS = 2;
+	public static final int RUNS_PER_THREAD = 1;
+	public static final int THREADS = 1;
 	public static boolean logEverything = true;
 
 	static
@@ -45,8 +45,9 @@ public abstract class PerformanceTest
 							{
 								System.out.println( "Creating WebDriver for Thread " + key.getName() );
 							}
-							//return new PhantomJSDriver();
-							return new HtmlUnitDriver();
+							return new PhantomJSDriver();
+							//return new HtmlUnitDriver();
+							//return new FirefoxDriver();
 						}
 					} );
 
