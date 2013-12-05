@@ -11,7 +11,7 @@ import org.apache.http.impl.client.HttpClientBuilder;
 import org.junit.AfterClass;
 import org.junit.Rule;
 import org.openqa.selenium.WebDriver;
-import org.openqa.selenium.phantomjs.PhantomJSDriver;
+import org.openqa.selenium.htmlunit.HtmlUnitDriver;
 
 import java.util.Collection;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -45,8 +45,8 @@ public abstract class PerformanceTest
 							{
 								System.out.println( "Creating WebDriver for Thread " + key.getName() );
 							}
-							return new PhantomJSDriver();
-							//return new HtmlUnitDriver();
+							//return new PhantomJSDriver();
+							return new HtmlUnitDriver();
 						}
 					} );
 
