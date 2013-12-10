@@ -24,7 +24,7 @@ import static org.junit.Assert.assertThat;
  */
 public abstract class PerformanceTest
 {
-	public static final int RUNS_PER_THREAD = 1;
+	public static final int RUNS_PER_THREAD = 10;
 	public static final int THREADS = 1;
 	public static boolean logEverything = true;
 
