@@ -1,75 +1,152 @@
 package dejaclick.replay
 
+import com.google.common.base.Supplier
+import com.google.common.collect.Multimaps
+import groovy.util.logging.Log
+import groovy.util.slurpersupport.GPathResult
 import org.apache.http.client.methods.HttpGet
+import org.apache.http.impl.client.CloseableHttpClient
 import org.apache.http.impl.client.HttpClients
+import org.apache.http.util.EntityUtils
+
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.logging.FileHandler
+import java.util.logging.SimpleFormatter
+
+import static java.lang.Math.max
+import static java.util.concurrent.TimeUnit.SECONDS
 
 /**
  *
  * @author renato
  */
+@Log
 class DejaClickPlayer {
 
-    def bySeq = { it.@seq.toInteger() }
+    final bySeq = { it.@seq.toInteger() }
+    final timer = new Timer( false )
+    final runner = Executors.newCachedThreadPool()
+
+    final doNotHandleHeaders = [ 'Cookie' ].asImmutable()
+
+    DejaClickPlayer() {
+        def logHandler = new FileHandler( "out/dejaClick.log" )
+        logHandler.formatter = new SimpleFormatter()
+        log.setUseParentHandlers( false ) // stop logging to stdout
+        log.addHandler( logHandler )
+    }
+
+    GPathResult parse( URL pathToScript ) {
+        new XmlSlurper().parse( pathToScript.newInputStream() )
+    }
 
     void play( URL pathToScript ) {
-        def script = new XmlSlurper().parse( pathToScript.newInputStream() )
+        play parse( pathToScript )
+    }
+
+    void play( GPathResult script, CloseableHttpClient httpClient = HttpClients.createDefault() ) {
         def replayAction = script.actions.find { it.@type == 'replay' }
 
         if ( !replayAction ) throw new RuntimeException( "Script does not have a replay action: $pathToScript" )
 
         def actionList = replayAction.action.list().sort( bySeq )
-        println "ActionList ${actionList.collect { ( it.@seq.toString() ) + '->' + it.@description }}"
+        log.warning "ActionList ${actionList.collect { ( it.@seq.toString() ) + '->' + it.@description }}"
 
         def eventList = actionList.collect { it.event.list().sort( bySeq ) }.flatten()
-        println "EventList ${eventList.collect { ( it.@seq.toString() ) + '->' + it.@description }}"
+        log.warning "EventList ${eventList.collect { ( it.@seq.toString() ) + '->' + it.@description }}"
 
         def requestList = eventList.collect { it.request.list() }.flatten()
-        println "Number of requests found: ${requestList.size()}"
+        log.warning "Number of requests found: ${requestList.size()}"
 
-        runRequests( requestList )
+        def steps = requestList.collect { it.step.list() }.flatten()
+        runSteps( steps, httpClient )
     }
 
-    void runRequests( List requests ) {
-        for ( request in requests ) {
-            def steps = request.step.list()
-            runSteps( steps )
-        }
-    }
+    void runSteps( List steps, CloseableHttpClient httpClient ) {
+        def requestsByTimestamp = Multimaps.newListMultimap( [ : ], [ get: { [ ] } ] as Supplier )
+        def toTimeStamp = { step -> step.@timeBeforeRequest.text() as double }
 
-    void runSteps( List steps ) {
+        final earliestTime = steps.collect( toTimeStamp ).min()
+
         for ( step in steps ) {
-            def url = step.@url.text()
-            println "Running step ${decode( url )}"
-            def decodedUri = decode( url ).toURI()
-            runRequest( decodedUri, step )
+            requestsByTimestamp.get( toTimeStamp( step ) - earliestTime ) << step
+        }
+
+        log.warning "Requests by Timestamp: ${requestsByTimestamp.keys()}"
+
+        assert steps.size() == requestsByTimestamp.values().collect { it.size() }.sum()
+        final taskWaiter = new CountDownLatch( steps.size() )
+
+        long actualCalls = 0
+        requestsByTimestamp.keySet().toList().sort().each { time ->
+            def simultaneousSteps = requestsByTimestamp.get( time )
+            for ( step in simultaneousSteps ) {
+                timer.schedule( {
+                    runner.execute { runStep( step, httpClient, taskWaiter ) }
+                } as TimerTask, time.toLong() )
+                actualCalls++
+            }
+        }
+        assert steps.size() == actualCalls
+        def success = taskWaiter.await( 30, SECONDS )
+
+        if ( success ) {
+            log.warning "Successfully ran all steps"
+        } else {
+            log.warning "Failed miserably: TIMEOUT"
         }
     }
 
-    private void runRequest( URI uri, step ) {
-        def http = HttpClients.createDefault()
-        def method = step.@method?.text() ?: 'GET'
+    private void runStep( step, CloseableHttpClient httpClient, CountDownLatch latch ) {
+        log.warning "Running STEP"
 
-        if ( method == 'GET' ) {
-            def get = new HttpGet( uri )
-            step.reqhdr.each { headerEntry ->
-                println( "Header: " + headerEntry.@name + '   ' + decode( headerEntry.text() ) )
-                get.setHeader( headerEntry.@name.text(), decode( headerEntry.text() ) )
-            }
-            def response = http.execute( get )
+        try {
+            def method = step.@method?.text() ?: 'GET'
 
-            try {
-                println "StatusLine: $response.statusLine"
-                if ( response.statusLine.statusCode == 200 ) {
-                    def responseEntity = response.entity
-                    println "Response length: ${responseEntity.contentLength}"
+            if ( method == 'GET' ) {
+                def uri = decode( step.@url.text() ).toURI()
+                log.warning "Running request to URI $uri"
+                def get = new HttpGet( uri )
+                step.reqhdr.each { headerEntry ->
+                    def headerName = headerEntry.@name.text()
+                    log.warning( "Header: " + headerEntry.@name + '   ' + decode( headerEntry.text() ) )
+                    if ( headerName in doNotHandleHeaders ) {
+                        log.warning "Not handling this header!"
+                    } else {
+                        get.setHeader( headerEntry.@name.text(), decode( headerEntry.text() ) )
+                    }
                 }
-            } finally {
-                response.close()
-            }
+                def response = httpClient.execute( get )
 
-        } else {
-            println "METHOD $method NOT SUPPORTED YET!!!"
+                try {
+                    log.warning "StatusLine: $response.statusLine"
+                    if ( response.statusLine.statusCode == 200 ) {
+                        def responseEntity = response.entity
+                        log.warning "Response length: ${responseEntity.contentLength}"
+                        if ( responseEntity.contentType.value.contains( 'text' ) ) {
+                            def responseText = EntityUtils.toString( responseEntity )
+                            log.warning( "Response (last chars): ...${responseText[ ( max( 0, responseText.size() - 100 ) )..-1 ]}" )
+                        } else {
+                            EntityUtils.consume( responseEntity )
+                        }
+                    } else {
+                        log.warning "********* RESPONSE NOT OK: ${response.statusLine.statusCode} *************"
+                    }
+                } finally {
+                    response.close()
+                }
+
+            } else {
+                log.warning "METHOD $method NOT SUPPORTED YET!!!"
+            }
+        } catch ( e ) {
+            log.warning "Problem running step $e"
+            e.printStackTrace()
+        } finally {
+            latch.countDown()
         }
+
     }
 
     private String decode( str ) {
