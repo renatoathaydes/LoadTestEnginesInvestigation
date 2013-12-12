@@ -124,7 +124,7 @@ class DejaClickPlayer {
                     if ( response.statusLine.statusCode == 200 ) {
                         def responseEntity = response.entity
                         log.warning "Response length: ${responseEntity.contentLength}"
-                        if ( responseEntity.contentType.value.contains( 'text' ) ) {
+                        if ( responseEntity.contentType?.value?.contains( 'text' ) ) {
                             def responseText = EntityUtils.toString( responseEntity )
                             log.warning( "Response (last chars): ...${responseText[ ( max( 0, responseText.size() - 100 ) )..-1 ]}" )
                         } else {
